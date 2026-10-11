@@ -1,8 +1,6 @@
+
 namespace SrpLab;
 
-/// <summary>
-/// Support ticket: SLA clocks, NLP-ish priority from free text, and public reply templates.
-/// </summary>
 public sealed class SupportTicket
 {
     public string Id { get; }
@@ -10,6 +8,10 @@ public sealed class SupportTicket
     public string Body { get; private set; }
     public DateTimeOffset OpenedAt { get; }
     public string Priority { get; private set; } = "P3";
+
+    private readonly TicketPriorityCalculator _priorityCalculator = new();
+    private readonly SlaCalculator _slaCalculator = new();
+    private readonly SupportMessageFormatter _messageFormatter = new();
 
     public SupportTicket(string id, string subject, string body, DateTimeOffset openedAt)
     {
@@ -28,39 +30,28 @@ public sealed class SupportTicket
 
     public void RecalculatePriorityFromText()
     {
-        // Keyword heuristics will churn with support playbooks; SLA math will not.
-        var blob = (Subject + " " + Body).ToLowerInvariant();
-        if (blob.Contains("down") || blob.Contains("outage") || blob.Contains("cannot login"))
-            Priority = "P1";
-        else if (blob.Contains("urgent") || blob.Contains("asap") || blob.Contains("blocked"))
-            Priority = "P2";
-        else
-            Priority = "P3";
+        Priority = _priorityCalculator.Calculate(Subject, Body);
     }
 
     public DateTimeOffset SlaDeadline()
     {
-        // Operational SLA policy — different stakeholders than reply wording.
-        var hours = Priority switch
-        {
-            "P1" => 4,
-            "P2" => 24,
-            _ => 72
-        };
-        return OpenedAt.AddHours(hours);
+        return _slaCalculator.Deadline(OpenedAt, Priority);
     }
 
-    public bool IsBreached(DateTimeOffset now) => now > SlaDeadline();
+    public bool IsBreached(DateTimeOffset now)
+    {
+        return _slaCalculator.IsBreached(OpenedAt, Priority, now);
+    }
 
     public string DraftPublicReply(string agentName)
     {
-        // Tone/templates owned by CX — not by SLA engineering.
-        var apology = Priority == "P1" ? "We are treating this as a critical incident." : "Thanks for reaching out.";
-        return $"Hi,\n{apology}\nTicket {Id} is with {agentName}. Next update before {SlaDeadline():u}.\n";
+        return _messageFormatter.DraftPublicReply(
+            Id, Priority, agentName, SlaDeadline());
     }
 
     public string InternalEscalationBlurb()
     {
-        return $"ESCALATE {Id} priority={Priority} breachAt={SlaDeadline():u} keywords-scanned=yes";
+        return _messageFormatter.InternalEscalationBlurb(
+            Id, Priority, SlaDeadline());
     }
 }
